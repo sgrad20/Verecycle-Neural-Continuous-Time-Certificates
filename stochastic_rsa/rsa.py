@@ -55,7 +55,31 @@ class SupermartingaleCertificate():
             (dummy_x,),
             device=self.device
         )  # and this one on the infinitesimal generator values
+        
+    # define decrease verifier as a separate module to save time during verification, as we only need to compute the generator values for a subset of the cells
+    def _verify_decrease_cells(
+            self,
+            decrease_cells: BoundedTensor,
+            cell_magnitudes: torch.Tensor,
+            max_depth: int
+    ) -> int:
+        cell_system = CellVerificationSystem(max_depth)
+        try:
+            decrease_counterexamples = cell_system.verify(
+                self.decrease_verifier,
+                decrease_cells,
+                cell_magnitudes
+            )
+            n_decrease_counterexamples = decrease_counterexamples.shape[0]
+        except RuntimeError as e:
+            print(
+                f"Runtime error {e} occurred when verifying cells, "
+                "skipping this iteration and pretending 1 counterexample was found."
+            )
+            n_decrease_counterexamples = 1
 
+        return n_decrease_counterexamples
+    
     def train(self,
               n_epochs: int = 1_000_000,
               batch_size: int = 256,
@@ -249,19 +273,16 @@ class SupermartingaleCertificate():
                 decrease_cells = cells[mask, :]
 
                 if torch.numel(decrease_cells) > 0:
-
-                    # These are steps 11-18 put into a separate function
-                    cell_system = CellVerificationSystem(max_depth)
-                    decrease_counterexamples = cell_system.verify(
-                        self.decrease_verifier,
+                    n_decrease_counterexamples = self._verify_decrease_cells(
                         decrease_cells,
-                        cell_magnitudes
+                        cell_magnitudes,
+                        max_depth
                     )
-                    n_decrease_counterexamples = decrease_counterexamples.shape[0]
+
                     if n_decrease_counterexamples > 0:
                         print(
                             f"Found {n_decrease_counterexamples} "
-                            "potential decrease condition violations. "
+                            "potential decrease condition violations."
                         )
                 else:
                     n_decrease_counterexamples = 0

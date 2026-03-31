@@ -40,13 +40,12 @@ class CertificateModule(torch.nn.Sequential):
 
     def activation_derivative_last(self, x: torch.Tensor):
         """derivative of the activation function"""
-        e = torch.exp(x)
-        return e / (1.0 + e)
+        return torch.sigmoid(x)
 
     def activation_second_derivative_last(self, x: torch.Tensor):
         """second derivative of the activation function"""
-        e = torch.exp(x)
-        return e / torch.square(1.0 + e)
+        sigma = torch.sigmoid(x)
+        return sigma * (1.0 - sigma)
 
     def forward(self, x: torch.Tensor):
         """forward call, must be nonnegative"""
