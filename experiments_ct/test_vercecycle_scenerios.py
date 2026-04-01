@@ -22,10 +22,10 @@ from auto_LiRPA import BoundedModule
 torch.set_default_dtype(torch.float32)
 torch.use_deterministic_algorithms(True)
 
-DEVICE = torch.device("cpu")
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 RESULTS_DIR = REPO_ROOT / "experiments_ct" / "results_debug_v"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-
+REACH_AVOID_PROBABILITY = 0.9
 
 class SimpleRegion:
     def __init__(self, low, high):
@@ -108,11 +108,10 @@ def estimate_alpha(net, initial_set, n_samples=5000):
     return float(vals.max())
 
 
-def estimate_beta(net, unsafe_set, n_samples=5000):
-    xs = unsafe_set.sample(n_samples)
-    with torch.no_grad():
-        vals = net(xs).cpu().numpy().reshape(-1)
-    return float(vals.min())
+def estimate_beta(alpha, probability=REACH_AVOID_PROBABILITY):
+    if not (0.0 < probability < 1.0):
+        raise ValueError("probability must be strictly between 0 and 1")
+    return float(alpha / (1.0 - probability))
 
 
 def in_any_box(x_np: np.ndarray, bounds_np: np.ndarray) -> bool:
@@ -262,12 +261,12 @@ def main():
     verifier = make_verifier(net)
 
     alpha_ra = estimate_alpha(net, initial_set)
-    beta_ra = estimate_beta(net, unsafe_set)
+    beta_ra = estimate_beta(alpha_ra, REACH_AVOID_PROBABILITY)
     rho_orig = 1.0 - alpha_ra / beta_ra
 
     print("\n=== ESTIMATED CERTIFICATE PARAMETERS ===")
     print(f"alpha (max over X0)       = {alpha_ra:.6f}")
-    print(f"beta  (min over unsafe)   = {beta_ra:.6f}")
+    print(f"beta  (from p=0.9)        = {beta_ra:.6f}")
     print(f"alpha/beta                = {alpha_ra / beta_ra:.6f}")
     print(f"implied reach-avoid prob  = {rho_orig:.6f}")
     print()
@@ -286,54 +285,148 @@ def main():
     print(f"  95% CI            = [{lo_mc:.6f}, {hi_mc:.6f}]")
     print()
 
+    # xq_cases = [
+    #     {
+    #         "name": "xq_far_right_small",
+    #         "low": np.array([11.0, 3.5], dtype=np.float32),
+    #         "high": np.array([12.5, 4.5], dtype=np.float32),
+    #     },
+    #     {
+    #         "name": "xq_far_right_mid",
+    #         "low": np.array([9.0, 3.0], dtype=np.float32),
+    #         "high": np.array([12.0, 5.0], dtype=np.float32),
+    #     },
+    #     {
+    #         "name": "xq_mid_right_upper",
+    #         "low": np.array([4.0, 2.0], dtype=np.float32),
+    #         "high": np.array([7.0, 3.5], dtype=np.float32),
+    #     },
+    #     {
+    #         "name": "xq_transition_7_2p0_to_8_3p0",
+    #         "low": np.array([7.0, 2.0], dtype=np.float32),
+    #         "high": np.array([8.0, 3.0], dtype=np.float32),
+    #     },
+    #     {
+    #         "name": "xq_transition_7p5_2p3_to_9_3p3",
+    #         "low": np.array([7.5, 2.3], dtype=np.float32),
+    #         "high": np.array([9.0, 3.3], dtype=np.float32),
+    #     },
+    #     {
+    #         "name": "xq_transition_8_2p5_to_9p5_3p5",
+    #         "low": np.array([8.0, 2.5], dtype=np.float32),
+    #         "high": np.array([9.5, 3.5], dtype=np.float32),
+    #     },
+    #     {
+    #         "name": "xq_transition_8p5_2p7_to_10_3p8",
+    #         "low": np.array([8.5, 2.7], dtype=np.float32),
+    #         "high": np.array([10.0, 3.8], dtype=np.float32),
+    #     },
+    #     {
+    #         "name": "xq_transition_9_3_to_11_4",
+    #         "low": np.array([9.0, 3.0], dtype=np.float32),
+    #         "high": np.array([11.0, 4.0], dtype=np.float32),
+    #     },
+    #     {
+    #         "name": "xq_borderline_nonzero",
+    #         "low": np.array([4.5, 2.1], dtype=np.float32),
+    #         "high": np.array([6.0, 3.0], dtype=np.float32),
+    #     }
+    # ]
     xq_cases = [
-        {
-            "name": "xq_far_right_small",
-            "low": np.array([11.0, 3.5], dtype=np.float32),
-            "high": np.array([12.5, 4.5], dtype=np.float32),
-        },
-        {
-            "name": "xq_far_right_mid",
-            "low": np.array([9.0, 3.0], dtype=np.float32),
-            "high": np.array([12.0, 5.0], dtype=np.float32),
-        },
-        {
-            "name": "xq_mid_right_upper",
-            "low": np.array([4.0, 2.0], dtype=np.float32),
-            "high": np.array([7.0, 3.5], dtype=np.float32),
-        },
-        {
-            "name": "xq_transition_7_2p0_to_8_3p0",
-            "low": np.array([7.0, 2.0], dtype=np.float32),
-            "high": np.array([8.0, 3.0], dtype=np.float32),
-        },
-        {
-            "name": "xq_transition_7p5_2p3_to_9_3p3",
-            "low": np.array([7.5, 2.3], dtype=np.float32),
-            "high": np.array([9.0, 3.3], dtype=np.float32),
-        },
-        {
-            "name": "xq_transition_8_2p5_to_9p5_3p5",
-            "low": np.array([8.0, 2.5], dtype=np.float32),
-            "high": np.array([9.5, 3.5], dtype=np.float32),
-        },
-        {
-            "name": "xq_transition_8p5_2p7_to_10_3p8",
-            "low": np.array([8.5, 2.7], dtype=np.float32),
-            "high": np.array([10.0, 3.8], dtype=np.float32),
-        },
-        {
-            "name": "xq_transition_9_3_to_11_4",
-            "low": np.array([9.0, 3.0], dtype=np.float32),
-            "high": np.array([11.0, 4.0], dtype=np.float32),
-        },
-        {
-            "name": "xq_borderline_nonzero",
-            "low": np.array([4.5, 2.1], dtype=np.float32),
-            "high": np.array([6.0, 3.0], dtype=np.float32),
-        }
-    ]
+    # -----------------------------------------------------------------
+    # Original exploratory cases
+    # -----------------------------------------------------------------
+    {
+        "name": "xq_far_right_small",
+        "low": np.array([11.0, 3.5], dtype=np.float32),
+        "high": np.array([12.5, 4.5], dtype=np.float32),
+    },
+    {
+        "name": "xq_far_right_mid",
+        "low": np.array([9.0, 3.0], dtype=np.float32),
+        "high": np.array([12.0, 5.0], dtype=np.float32),
+    },
+    {
+        "name": "xq_transition_7p5_2p3_to_9_3p3",
+        "low": np.array([7.5, 2.3], dtype=np.float32),
+        "high": np.array([9.0, 3.3], dtype=np.float32),
+    },
 
+    # -----------------------------------------------------------------
+    # Thesis-aligned regions already used in main experiment
+    # -----------------------------------------------------------------
+    {
+        "name": "low_reclaim_region",
+        "low": np.array([4.0, 2.0], dtype=np.float32),
+        "high": np.array([7.0, 3.5], dtype=np.float32),
+    },
+    {
+        "name": "mid_transition_region",
+        "low": np.array([7.0, 2.0], dtype=np.float32),
+        "high": np.array([8.0, 3.0], dtype=np.float32),
+    },
+    {
+        "name": "near_sat_far_right_region",
+        "low": np.array([11.0, 3.5], dtype=np.float32),
+        "high": np.array([12.5, 4.5], dtype=np.float32),
+    },
+    {
+        "name": "right_corridor_region",
+        "low": np.array([7.5, 2.0], dtype=np.float32),
+        "high": np.array([10.5, 4.0], dtype=np.float32),
+    },
+    {
+        "name": "xq_borderline_nonzero",
+        "low": np.array([4.5, 2.1], dtype=np.float32),
+        "high": np.array([6.0, 3.0], dtype=np.float32),
+    },
+
+    # -----------------------------------------------------------------
+    # Extra placement cases inspired by the whiteboard "purple squares"
+    # -----------------------------------------------------------------
+
+    # 1) Close to the initial region: changed set encountered early
+    {
+        "name": "near_init_region_large",
+        "low": np.array([-1.5, 2.0], dtype=np.float32),
+        "high": np.array([1.5, 3.4], dtype=np.float32),
+    },
+
+    # Smaller version near initial set
+    {
+        "name": "near_init_region_small",
+        "low": np.array([-0.8, 2.3], dtype=np.float32),
+        "high": np.array([0.8, 3.1], dtype=np.float32),
+    },
+
+    # 2) Close to the target approach zone: trap/sabotage right before success
+    {
+        "name": "near_target_region_large",
+        "low": np.array([2.5, 0.8], dtype=np.float32),
+        "high": np.array([5.5, 2.0], dtype=np.float32),
+    },
+
+    # Smaller version near target approach
+    {
+        "name": "near_target_region_small",
+        "low": np.array([3.0, 1.0], dtype=np.float32),
+        "high": np.array([4.8, 1.8], dtype=np.float32),
+    },
+
+    # 3) Around the center corridor between init and target
+    {
+        "name": "central_bridge_region",
+        "low": np.array([1.5, 1.0], dtype=np.float32),
+        "high": np.array([4.5, 2.6], dtype=np.float32),
+    },
+
+    # 4) Outer high-value region on the opposite side, should be less relevant
+    {
+        "name": "outer_left_high_region",
+        "low": np.array([-12.5, -4.5], dtype=np.float32),
+        "high": np.array([-10.5, -3.0], dtype=np.float32),
+    },
+    ]
     print("=" * 80)
     print("VeRecycle REGIME DEBUG")
     print("=" * 80)
@@ -376,6 +469,7 @@ def main():
             "mc_original": p_mc,
             "mc_original_ci_low": lo_mc,
             "mc_original_ci_high": hi_mc,
+            "box_area": float((high[0] - low[0]) * (high[1] - low[1])),
         }
         rows.append(row)
 
