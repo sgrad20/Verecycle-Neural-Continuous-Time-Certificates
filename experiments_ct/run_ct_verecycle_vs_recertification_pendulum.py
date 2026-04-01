@@ -511,72 +511,126 @@ def recertify_on_scenario(policy, net, scenario: Scenario, timeout_s=RECERT_TIME
 # ---------------------------------------------------------------------
 # Scenarios
 # ---------------------------------------------------------------------
+# def get_scenarios():
+#     return [
+#         Scenario(
+#             name="easy_recert_far_right_small",
+#             low=np.array([12.5, 3.8], dtype=np.float32),
+#             high=np.array([13.5, 4.2], dtype=np.float32),
+#             change_type="diffusion_scale",
+#             diffusion_scale=1.01,
+#             description=(
+#                 "Easy recertification candidate: very small far-right box with "
+#                 "minimal diffusion increase. Intended to produce one successful warm-start baseline."
+#             ),
+#         ),
+#         Scenario(
+#             name="saturation_case_far_right",
+#             low=np.array([10.0, 3.0], dtype=np.float32),
+#             high=np.array([15.0, 5.0], dtype=np.float32),
+#             change_type="diffusion_scale",
+#             diffusion_scale=1.2,
+#             description=(
+#                 "Near-saturation case: high-value far-right region with moderate "
+#                 "diffusion increase. Good for showing fast high reclaimed bounds."
+#             ),
+#         ),
+#         Scenario(
+#             name="tradeoff_case_mid_right_band",
+#             low=np.array([3.0, 1.5], dtype=np.float32),
+#             high=np.array([6.0, 3.0], dtype=np.float32),
+#             change_type="diffusion_scale",
+#             diffusion_scale=1.2,
+#             description=(
+#                 "Tradeoff case: mid-right band, expected to have alpha < m < beta "
+#                 "so VeRecycle gives a nonzero but noticeably reduced bound."
+#             ),
+#         ),
+#         Scenario(
+#             name="tradeoff_case_mid_right_drift",
+#             low=np.array([3.0, 1.5], dtype=np.float32),
+#             high=np.array([6.0, 3.0], dtype=np.float32),
+#             change_type="drift_bias",
+#             drift_bias=(-0.3, -0.1),
+#             description=(
+#                 "Tradeoff case with mild drift degradation. Useful if diffusion-only "
+#                 "modifications remain too easy/high."
+#             ),
+#         ),
+#         Scenario(
+#             name="zero_case_goal_side",
+#             low=np.array([-3.0, 1.6], dtype=np.float32),
+#             high=np.array([-1.0, 2.6], dtype=np.float32),
+#             change_type="diffusion_scale",
+#             diffusion_scale=1.2,
+#             description=(
+#                 "Zero-case candidate near a low-certificate region. Expected m <= alpha, "
+#                 "so VeRecycle should return zero or near-zero."
+#             ),
+#         ),
+#         Scenario(
+#             name="zero_case_goal_side_drift",
+#             low=np.array([-3.0, 1.6], dtype=np.float32),
+#             high=np.array([-1.0, 2.6], dtype=np.float32),
+#             change_type="drift_bias",
+#             drift_bias=(-0.5, -0.2),
+#             description=(
+#                 "More severe zero-case candidate near a low-certificate region, "
+#                 "using drift bias instead of diffusion scaling."
+#             ),
+#         ),
+#     ]
 def get_scenarios():
     return [
         Scenario(
-            name="easy_recert_far_right_small",
-            low=np.array([12.5, 3.8], dtype=np.float32),
-            high=np.array([13.5, 4.2], dtype=np.float32),
+            name="low_reclaim_mid_right_upper",
+            low=np.array([4.0, 2.0], dtype=np.float32),
+            high=np.array([7.0, 3.5], dtype=np.float32),
+            change_type="diffusion_scale",
+            diffusion_scale=1.2,
+            description=(
+                "Low but nonzero reclaimable case. Useful for showing VeRecycle still "
+                "returns a meaningful guarantee near lower-certificate regions."
+            ),
+        ),
+        Scenario(
+            name="borderline_nonzero",
+            low=np.array([4.5, 2.1], dtype=np.float32),
+            high=np.array([6.0, 3.0], dtype=np.float32),
+            change_type="diffusion_scale",
+            diffusion_scale=1.2,
+            description=(
+                "Borderline reclaimable case between low and medium reclaim."
+            ),
+        ),
+        Scenario(
+            name="mid_reclaim_transition_7_2_to_8_3",
+            low=np.array([7.0, 2.0], dtype=np.float32),
+            high=np.array([8.0, 3.0], dtype=np.float32),
+            change_type="diffusion_scale",
+            diffusion_scale=1.2,
+            description=(
+                "Intermediate reclaimable case in the transition region."
+            ),
+        ),
+        Scenario(
+            name="high_reclaim_transition_8_2p5_to_9p5_3p5",
+            low=np.array([8.0, 2.5], dtype=np.float32),
+            high=np.array([9.5, 3.5], dtype=np.float32),
+            change_type="diffusion_scale",
+            diffusion_scale=1.2,
+            description=(
+                "High reclaimable case with strong VeRecycle guarantee."
+            ),
+        ),
+        Scenario(
+            name="near_saturation_far_right_small",
+            low=np.array([11.0, 3.5], dtype=np.float32),
+            high=np.array([12.5, 4.5], dtype=np.float32),
             change_type="diffusion_scale",
             diffusion_scale=1.01,
             description=(
-                "Easy recertification candidate: very small far-right box with "
-                "minimal diffusion increase. Intended to produce one successful warm-start baseline."
-            ),
-        ),
-        Scenario(
-            name="saturation_case_far_right",
-            low=np.array([10.0, 3.0], dtype=np.float32),
-            high=np.array([15.0, 5.0], dtype=np.float32),
-            change_type="diffusion_scale",
-            diffusion_scale=1.2,
-            description=(
-                "Near-saturation case: high-value far-right region with moderate "
-                "diffusion increase. Good for showing fast high reclaimed bounds."
-            ),
-        ),
-        Scenario(
-            name="tradeoff_case_mid_right_band",
-            low=np.array([3.0, 1.5], dtype=np.float32),
-            high=np.array([6.0, 3.0], dtype=np.float32),
-            change_type="diffusion_scale",
-            diffusion_scale=1.2,
-            description=(
-                "Tradeoff case: mid-right band, expected to have alpha < m < beta "
-                "so VeRecycle gives a nonzero but noticeably reduced bound."
-            ),
-        ),
-        Scenario(
-            name="tradeoff_case_mid_right_drift",
-            low=np.array([3.0, 1.5], dtype=np.float32),
-            high=np.array([6.0, 3.0], dtype=np.float32),
-            change_type="drift_bias",
-            drift_bias=(-0.3, -0.1),
-            description=(
-                "Tradeoff case with mild drift degradation. Useful if diffusion-only "
-                "modifications remain too easy/high."
-            ),
-        ),
-        Scenario(
-            name="zero_case_goal_side",
-            low=np.array([-3.0, 1.6], dtype=np.float32),
-            high=np.array([-1.0, 2.6], dtype=np.float32),
-            change_type="diffusion_scale",
-            diffusion_scale=1.2,
-            description=(
-                "Zero-case candidate near a low-certificate region. Expected m <= alpha, "
-                "so VeRecycle should return zero or near-zero."
-            ),
-        ),
-        Scenario(
-            name="zero_case_goal_side_drift",
-            low=np.array([-3.0, 1.6], dtype=np.float32),
-            high=np.array([-1.0, 2.6], dtype=np.float32),
-            change_type="drift_bias",
-            drift_bias=(-0.5, -0.2),
-            description=(
-                "More severe zero-case candidate near a low-certificate region, "
-                "using drift bias instead of diffusion scaling."
+                "Near-saturation case where the reclaimed guarantee is almost the original one."
             ),
         ),
     ]
@@ -722,6 +776,49 @@ def make_summary_plots(summary_rows, out_dir: Path):
     plt.legend()
     plt.tight_layout()
     plt.savefig(out_dir / "runtime_vs_bound.png", dpi=300, bbox_inches="tight")
+    plt.close()
+
+        # -----------------------------------------------------------------
+    # Ordered plots by m_lb_ibp
+    # -----------------------------------------------------------------
+    order = np.argsort(m_lb_ibp)
+    ordered_names = [scenario_names[i] for i in order]
+    ordered_vr = [vr_bounds[i] for i in order]
+    ordered_rr = [rr_bounds[i] for i in order]
+    ordered_mc = [mc_bounds[i] for i in order]
+    ordered_m = [m_lb_ibp[i] for i in order]
+
+    x_ord = np.arange(len(order))
+
+    plt.figure(figsize=(9, 5))
+    plt.bar(x_ord, ordered_vr)
+    plt.xticks(x_ord, ordered_names, rotation=20, ha="right")
+    plt.ylabel("VeRecycle bound")
+    plt.title("VeRecycle bounds ordered by local lower bound")
+    plt.tight_layout()
+    plt.savefig(out_dir / "verecycle_ordered.png", dpi=300, bbox_inches="tight")
+    plt.close()
+
+    plt.figure(figsize=(9, 5))
+    plt.bar(x_ord, ordered_m)
+    plt.xticks(x_ord, ordered_names, rotation=20, ha="right")
+    plt.ylabel("m_lb_ibp")
+    plt.title("Local lower bound ordered by scenario")
+    plt.tight_layout()
+    plt.savefig(out_dir / "m_lb_ibp_ordered.png", dpi=300, bbox_inches="tight")
+    plt.close()
+
+    plt.figure(figsize=(9, 5))
+    width_ord = 0.25
+    plt.bar(x_ord - width_ord, ordered_vr, width_ord, label="VeRecycle")
+    plt.bar(x_ord, ordered_rr, width_ord, label="Re-certification")
+    plt.bar(x_ord + width_ord, ordered_mc, width_ord, label="Monte Carlo")
+    plt.xticks(x_ord, ordered_names, rotation=20, ha="right")
+    plt.ylabel("Reach-avoid probability")
+    plt.title("Bounds ordered by local lower bound")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(out_dir / "bounds_ordered_by_m.png", dpi=300, bbox_inches="tight")
     plt.close()
 
 
@@ -881,7 +978,8 @@ def main():
             writer = csv.DictWriter(f, fieldnames=["epoch", "rho"])
             writer.writeheader()
             writer.writerows(history)
-
+    
+    summary_rows.sort(key=lambda row: row["m_lb_ibp"])
     if summary_rows:
         summary_csv = out_dir / "summary.csv"
         with open(summary_csv, "w", newline="") as f:
