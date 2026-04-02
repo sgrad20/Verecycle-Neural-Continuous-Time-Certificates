@@ -14,19 +14,21 @@ import numpy as np
 import numpy.random as npr
 import torch
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 
 import controlled_sde
 from rl_agent import TanhPolicy
 import stochastic_rsa as rsa
 from stochastic_rsa.continuous_vere_cycle import run_continuous_VeRecycle
-from auto_LiRPA import BoundedModule
+from auto_LiRPA import BoundedModule, BoundedTensor
+from auto_LiRPA.perturbations import PerturbationLpNorm
 
 torch.set_default_dtype(torch.float32)
 torch.use_deterministic_algorithms(True)
 
 REACH_AVOID_PROBABILITY = 0.9
 DEVICE = torch.device("cpu")
-RESULTS_DIR = REPO_ROOT / "experiments_ct" / "results_try"
+RESULTS_DIR = REPO_ROOT / "experiments_ct" / "results_and_plots"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------
@@ -322,6 +324,127 @@ def _extract_train_result(result):
         return certified, epoch
 
     return bool(result), -1
+
+
+def verify_original_certificate_on_scenario(
+    policy,
+    net,
+    scenario: Scenario,
+    beta_ra: float,
+    verifier_mesh_size: int = RECERT_VERIFIER_MESH,
+    max_depth: int = RECERT_MAX_DEPTH,
+):
+    """Verify the original certificate on the modified dynamics without retraining."""
+    start = time.time()
+    modified_sde = None
+    try:
+        device = torch.device("cpu")
+        local_interest_set = rsa.AABBSet(global_bounds, device)
+        local_initial_set = rsa.AABBSet(initial_bounds, device)
+        local_target_set = rsa.AABBSet(target_bounds, device)
+        local_unsafe_set = rsa.AABBSet(unsafe_bounds, device)
+        local_spec = rsa.Specification(
+            local_interest_set,
+            local_initial_set,
+            local_unsafe_set,
+            local_target_set,
+            REACH_AVOID_PROBABILITY,
+            0.0,
+        )
+
+        modified_sde = LocalChangedPendulum(policy, scenario)
+        certificate = rsa.SupermartingaleCertificate(modified_sde, local_spec, net, device)
+
+        cells = torch.meshgrid(
+            torch.linspace(global_bounds[0, 0, 0], global_bounds[0, 1, 0], verifier_mesh_size + 1),
+            torch.linspace(global_bounds[0, 0, 1], global_bounds[0, 1, 1], verifier_mesh_size + 1),
+            indexing="xy"
+        )
+        x_L = torch.cat(
+            (
+                torch.reshape(cells[0][:-1, :-1], (-1, 1)),
+                torch.reshape(cells[1][:-1, :-1], (-1, 1)),
+            ),
+            dim=1,
+        )
+        x_U = torch.cat(
+            (
+                torch.reshape(cells[0][1:, 1:], (-1, 1)),
+                torch.reshape(cells[1][1:, 1:], (-1, 1)),
+            ),
+            dim=1,
+        )
+        cells = BoundedTensor(
+            0.5 * (x_L + x_U),
+            PerturbationLpNorm(x_L=x_L, x_U=x_U),
+        )
+        cell_magnitudes = 0.5 * local_interest_set.magnitudes / verifier_mesh_size
+
+        cell_lb, cell_ub = certificate.level_verifier.compute_bounds(
+            cells,
+            method="IBP",
+        )
+
+        init_mask = local_initial_set.contains(cells)
+        if torch.any(init_mask):
+            init_upper = torch.max(cell_ub[init_mask, :]).item()
+        else:
+            return False, time.time() - start, 0.0, 0.0, 1
+
+        unsafe_mask = local_unsafe_set.contains(cells)
+        if torch.any(unsafe_mask):
+            unsafe_lower = torch.min(cell_lb[unsafe_mask, :]).item()
+        else:
+            unsafe_lower = init_upper
+
+        if unsafe_lower <= 0.0:
+            prob_ra_estimate = 0.0
+        else:
+            prob_ra_estimate = max(1.0 - init_upper / unsafe_lower, 0.0)
+
+        if prob_ra_estimate < REACH_AVOID_PROBABILITY:
+            return False, time.time() - start, prob_ra_estimate, 0.0, 1
+
+        target_mask = local_target_set.contains(cells)
+        if not torch.any(target_mask):
+            return False, time.time() - start, prob_ra_estimate, 0.0, 1
+
+        alpha_s_candidate = torch.min(cell_ub[target_mask, :]).item()
+        boundary_mask = local_target_set.boundary_contains(cells, cell_magnitudes)
+        if not torch.any(boundary_mask):
+            return False, time.time() - start, prob_ra_estimate, 0.0, 1
+
+        beta_s_candidate = torch.max(cell_lb[boundary_mask, :]).item()
+        if beta_s_candidate <= 0.0:
+            prob_s_estimate = 0.0
+        else:
+            prob_s_estimate = max(1.0 - alpha_s_candidate / beta_s_candidate, 0.0)
+
+        if prob_s_estimate < STAY_PROBABILITY:
+            return False, time.time() - start, prob_ra_estimate, prob_s_estimate, 1
+
+        mask = torch.logical_and(
+            cell_lb > alpha_s_candidate,
+            cell_ub <= beta_ra,
+        ).squeeze()
+        decrease_cells = cells[mask, :]
+        if torch.numel(decrease_cells) > 0:
+            decrease_counterexamples = certificate._verify_decrease_cells(
+                decrease_cells,
+                cell_magnitudes,
+                max_depth,
+            )
+        else:
+            decrease_counterexamples = 0
+
+        verified = decrease_counterexamples == 0
+        return verified, time.time() - start, prob_ra_estimate, prob_s_estimate, decrease_counterexamples
+    finally:
+        try:
+            if modified_sde is not None:
+                modified_sde.close()
+        except Exception:
+            pass
 
 # def _extract_train_result(result):
 #     """
@@ -742,103 +865,103 @@ def get_scenarios():
             diffusion_scale=1.5,
             description="Low but nonzero reclaim region with stronger local diffusion."
         ),
-        # Scenario(
-        #     name="borderline_diff_2p0",
-        #     low=np.array([4.5, 2.1], dtype=np.float32),
-        #     high=np.array([6.0, 3.0], dtype=np.float32),
-        #     change_type="diffusion_scale",
-        #     diffusion_scale=2.0,
-        #     description="Borderline reclaimable case with strong diffusion increase."
-        # ),
-        # Scenario(
-        #     name="mid_transition_diff_2p0",
-        #     low=np.array([7.0, 2.0], dtype=np.float32),
-        #     high=np.array([8.0, 3.0], dtype=np.float32),
-        #     change_type="diffusion_scale",
-        #     diffusion_scale=2.0,
-        #     description="Intermediate reclaim case in a transition region."
-        # ),
-        # Scenario(
-        #     name="high_transition_diff_1p5",
-        #     low=np.array([8.0, 2.5], dtype=np.float32),
-        #     high=np.array([9.5, 3.5], dtype=np.float32),
-        #     change_type="diffusion_scale",
-        #     diffusion_scale=1.5,
-        #     description="High reclaim case with moderate local degradation."
-        # ),
-        # Scenario(
-        #     name="near_sat_far_right_diff_1p1",
-        #     low=np.array([11.0, 3.5], dtype=np.float32),
-        #     high=np.array([12.5, 4.5], dtype=np.float32),
-        #     change_type="diffusion_scale",
-        #     diffusion_scale=1.1,
-        #     description="Near-saturation case where reclaimed guarantee should remain close to the original."
-        # ),
-        # Scenario(
-        #     name="mid_band_drift_mild",
-        #     low=np.array([5.0, 2.0], dtype=np.float32),
-        #     high=np.array([8.0, 3.5], dtype=np.float32),
-        #     change_type="drift_bias",
-        #     drift_bias=(-0.8, -0.4),
-        #     description="Mid-band drift degradation to complement diffusion-only changes."
-        # ),
-        # Scenario(
-        #     name="right_corridor_drift_strong",
-        #     low=np.array([7.5, 2.0], dtype=np.float32),
-        #     high=np.array([10.5, 4.0], dtype=np.float32),
-        #     change_type="drift_bias",
-        #     drift_bias=(-1.5, -0.8),
-        #     description="Large drift-degraded corridor intended to be visited more often."
-        # ),
         Scenario(
-            name="absorbing_near_init_large",
+            name="borderline_diff_2p0",
+            low=np.array([4.5, 2.1], dtype=np.float32),
+            high=np.array([6.0, 3.0], dtype=np.float32),
+            change_type="diffusion_scale",
+            diffusion_scale=2.0,
+            description="Borderline reclaimable case with strong diffusion increase."
+        ),
+        Scenario(
+            name="mid_transition_diff_2p0",
+            low=np.array([7.0, 2.0], dtype=np.float32),
+            high=np.array([8.0, 3.0], dtype=np.float32),
+            change_type="diffusion_scale",
+            diffusion_scale=2.0,
+            description="Intermediate reclaim case in a transition region."
+        ),
+        Scenario(
+            name="high_transition_diff_1p5",
+            low=np.array([8.0, 2.5], dtype=np.float32),
+            high=np.array([9.5, 3.5], dtype=np.float32),
+            change_type="diffusion_scale",
+            diffusion_scale=1.5,
+            description="High reclaim case with moderate local degradation."
+        ),
+        Scenario(
+            name="near_sat_far_right_diff_1p1",
+            low=np.array([11.0, 3.5], dtype=np.float32),
+            high=np.array([12.5, 4.5], dtype=np.float32),
+            change_type="diffusion_scale",
+            diffusion_scale=1.1,
+            description="Near-saturation case where reclaimed guarantee should remain close to the original."
+        ),
+        Scenario(
+            name="mid_band_drift_mild",
+            low=np.array([5.0, 2.0], dtype=np.float32),
+            high=np.array([8.0, 3.5], dtype=np.float32),
+            change_type="drift_bias",
+            drift_bias=(-0.8, -0.4),
+            description="Mid-band drift degradation to complement diffusion-only changes."
+        ),
+        Scenario(
+            name="right_corridor_drift_strong",
+            low=np.array([7.5, 2.0], dtype=np.float32),
+            high=np.array([10.5, 4.0], dtype=np.float32),
+            change_type="drift_bias",
+            drift_bias=(-1.5, -0.8),
+            description="Large drift-degraded corridor intended to be visited more often."
+        ),
+        Scenario(
+            name="absorbing_scenario_A_init_trap",
             low=np.array([-1.5, 2.0], dtype=np.float32),
             high=np.array([1.5, 3.4], dtype=np.float32),
             change_type="absorbing",
-            description="Absorbing region close to the initial set; catastrophic early trapping case."
+            description="Scenario A: absorbing region close to the initial set. This is a worst-case early-trap region where re-certification often struggles."
         ),
-        # Scenario(
-        #     name="absorbing_near_target_large",
-        #     low=np.array([2.5, 0.8], dtype=np.float32),
-        #     high=np.array([5.5, 2.0], dtype=np.float32),
-        #     change_type="absorbing",
-        #     description="Absorbing region near the target approach; sabotages success right before reaching target."
-        # ),
-        # Scenario(
-        #     name="absorbing_central_bridge",
-        #     low=np.array([1.5, 1.0], dtype=np.float32),
-        #     high=np.array([4.5, 2.6], dtype=np.float32),
-        #     change_type="absorbing",
-        #     description="Absorbing region in the central corridor between initial and target regions."
-        # ),
-        # Scenario(
-        #     name="absorbing_low_reclaim_region",
-        #     low=np.array([4.0, 2.0], dtype=np.float32),
-        #     high=np.array([7.0, 3.5], dtype=np.float32),
-        #     change_type="absorbing",
-        #     description="Absorbing version of the low-reclaim region."
-        # ),
-        # Scenario(
-        #     name="absorbing_mid_transition_region",
-        #     low=np.array([7.0, 2.0], dtype=np.float32),
-        #     high=np.array([8.0, 3.0], dtype=np.float32),
-        #     change_type="absorbing",
-        #     description="Absorbing version of the mid-transition region."
-        # ),
-        # Scenario(
-        #     name="absorbing_near_sat_far_right",
-        #     low=np.array([11.0, 3.5], dtype=np.float32),
-        #     high=np.array([12.5, 4.5], dtype=np.float32),
-        #     change_type="absorbing",
-        #     description="Absorbing region far right in a high-certificate area; expected to matter little empirically."
-        # ),
-        # Scenario(
-        #     name="absorbing_outer_left_high_region",
-        #     low=np.array([-12.5, -4.5], dtype=np.float32),
-        #     high=np.array([-10.5, -3.0], dtype=np.float32),
-        #     change_type="absorbing",
-        #     description="Absorbing region in a distant high-certificate area used as a control scenario."
-        # ),
+        Scenario(
+            name="absorbing_scenario_B_target_trap",
+            low=np.array([2.5, 0.8], dtype=np.float32),
+            high=np.array([5.5, 2.0], dtype=np.float32),
+            change_type="absorbing",
+            description="Scenario B: absorbing region near the target approach. This tests a late-stage trap that can still defeat re-certification."
+        ),
+        Scenario(
+            name="absorbing_central_bridge",
+            low=np.array([1.5, 1.0], dtype=np.float32),
+            high=np.array([4.5, 2.6], dtype=np.float32),
+            change_type="absorbing",
+            description="Absorbing region in the central corridor between initial and target regions."
+        ),
+        Scenario(
+            name="absorbing_low_reclaim_region",
+            low=np.array([4.0, 2.0], dtype=np.float32),
+            high=np.array([7.0, 3.5], dtype=np.float32),
+            change_type="absorbing",
+            description="Absorbing version of the low-reclaim region."
+        ),
+        Scenario(
+            name="absorbing_mid_transition_region",
+            low=np.array([7.0, 2.0], dtype=np.float32),
+            high=np.array([8.0, 3.0], dtype=np.float32),
+            change_type="absorbing",
+            description="Absorbing version of the mid-transition region."
+        ),
+        Scenario(
+            name="absorbing_near_sat_far_right",
+            low=np.array([11.0, 3.5], dtype=np.float32),
+            high=np.array([12.5, 4.5], dtype=np.float32),
+            change_type="absorbing",
+            description="Absorbing region far right in a high-certificate area; expected to matter little empirically."
+        ),
+        Scenario(
+            name="absorbing_outer_left_high_region",
+            low=np.array([-12.5, -4.5], dtype=np.float32),
+            high=np.array([-10.5, -3.0], dtype=np.float32),
+            change_type="absorbing",
+            description="Absorbing region in a distant high-certificate area used as a control scenario."
+        ),
     ]
 # ---------------------------------------------------------------------
 # Plotting
@@ -1023,6 +1146,92 @@ def make_summary_plots(summary_rows, out_dir: Path):
     plt.close()
 
 
+def plot_scenario_space(scenario: Scenario, out_dir: Path):
+    fig, ax = plt.subplots(figsize=(6, 6))
+
+    def add_box(bounds, label, edgecolor, facecolor, alpha=0.15):
+        low = bounds[0]
+        high = bounds[1]
+        width = float(high[0] - low[0])
+        height = float(high[1] - low[1])
+        rect = Rectangle(
+            (float(low[0]), float(low[1])), width, height,
+            edgecolor=edgecolor,
+            facecolor=facecolor,
+            alpha=alpha,
+            linewidth=2,
+            label=label,
+        )
+        ax.add_patch(rect)
+
+    add_box(initial_bounds[0], "Initial set", "green", "green", alpha=0.12)
+    add_box(target_bounds[0], "Target set", "blue", "blue", alpha=0.12)
+    for ub in unsafe_bounds:
+        add_box(ub, "Unsafe set", "red", "none", alpha=0.0)
+    add_box(np.stack([scenario.low, scenario.high]), "Disrupted X_q", "orange", "orange", alpha=0.18)
+
+    ax.set_title(f"Scenario space: {scenario.name}")
+    ax.set_xlabel("Velocity")
+    ax.set_ylabel("Angle")
+    ax.set_xlim(float(global_bounds[0, 0, 0]) - 0.5, float(global_bounds[0, 1, 0]) + 0.5)
+    ax.set_ylim(float(global_bounds[0, 0, 1]) - 0.5, float(global_bounds[0, 1, 1]) + 0.5)
+    ax.legend(loc="upper right", fontsize=8)
+    ax.grid(True, linestyle="--", alpha=0.4)
+    fig.tight_layout()
+    fig.savefig(out_dir / f"scenario_space_{scenario.name}.png", dpi=300)
+    plt.close(fig)
+
+
+def plot_certificate_value_histograms(net, out_dir: Path, alpha_ra: float, beta_ra: float, beta_ra_actual: float, n_initial: int = 5000, n_unsafe: int = 20000):
+    xs_init = initial_set.sample(n_initial)
+    xs_unsafe = unsafe_set.sample(n_unsafe)
+    with torch.no_grad():
+        vals_init = net(xs_init).cpu().numpy().reshape(-1)
+        vals_unsafe = net(xs_unsafe).cpu().numpy().reshape(-1)
+
+    plt.figure(figsize=(10, 5))
+    bins = 80
+    plt.hist(vals_init, bins=bins, alpha=0.6, label="Initial set", density=True, color="#4C72B0")
+    plt.hist(vals_unsafe, bins=bins, alpha=0.6, label="Unsafe set", density=True, color="#C44E52")
+    plt.axvline(alpha_ra, color="green", linestyle="--", linewidth=2, label="alpha_RA")
+    plt.axvline(beta_ra, color="orange", linestyle="--", linewidth=2, label="beta_RA nominal")
+    plt.axvline(beta_ra_actual, color="red", linestyle=":", linewidth=2, label="beta_RA actual")
+    plt.xlabel("Certificate value V(x)")
+    plt.ylabel("Density")
+    plt.title("Certificate value distribution on initial and unsafe sets")
+    plt.legend(loc="upper right", fontsize=8)
+    plt.tight_layout()
+    plt.savefig(out_dir / "certificate_value_histogram.png", dpi=300, bbox_inches="tight")
+    plt.close()
+
+
+def plot_certificate_baseline_comparison(alpha_ra: float, beta_ra: float, beta_ra_actual: float, out_dir: Path):
+    rho_nominal = 1.0 - alpha_ra / beta_ra
+    rho_actual = 0.0 if beta_ra_actual <= 0.0 else max(0.0, 1.0 - alpha_ra / beta_ra_actual)
+    names = ["nominal", "actual"]
+    betas = [beta_ra, beta_ra_actual]
+    bounds = [rho_nominal, rho_actual]
+
+    plt.figure(figsize=(10, 4))
+    plt.subplot(1, 2, 1)
+    bars = plt.bar(names, betas, color=["#FFB000", "#D62728"])
+    plt.ylabel("Beta value")
+    plt.title("Nominal vs actual beta")
+    for bar, value in zip(bars, betas):
+        plt.text(bar.get_x() + bar.get_width() / 2, value, f"{value:.4f}", ha="center", va="bottom", fontsize=8)
+
+    plt.subplot(1, 2, 2)
+    bars = plt.bar(names, bounds, color=["#4C72B0", "#C44E52"])
+    plt.ylabel("Original bound")
+    plt.title("Nominal vs actual original bound")
+    for bar, value in zip(bars, bounds):
+        plt.text(bar.get_x() + bar.get_width() / 2, value, f"{value:.4f}", ha="center", va="bottom", fontsize=8)
+
+    plt.tight_layout()
+    plt.savefig(out_dir / "certificate_baseline_comparison.png", dpi=300, bbox_inches="tight")
+    plt.close()
+
+
 def make_recertification_history_plot(summary_rows, out_dir: Path):
     plt.figure(figsize=(8, 5))
     found = False
@@ -1074,15 +1283,27 @@ def main():
     policy, net, base_sde, _ = load_certified_checkpoint()
     verifier = make_verifier(net)
 
-    # ORIGINAL / VERECYCLE SIDE: keep beta reconstruction from 0.9
+    # ORIGINAL / VERECYCLE SIDE
+    #  - beta_ra: nominal original-certificate beta reconstructed from the specified
+    #    reach-avoid probability target p = 0.9.
+    #  - beta_ra_actual: empirical min V(x) over the unsafe set, using sampling.
+    #    This is not a certified beta, but it gives a fairer baseline for comparing
+    #    the original certificate against re-certification.
     alpha_ra = estimate_alpha(net, initial_set)
     beta_ra = estimate_beta(alpha_ra, REACH_AVOID_PROBABILITY)
-    rho_orig = 1.0 - alpha_ra / beta_ra
+    beta_ra_actual = estimate_beta_on_unsafe(net, unsafe_set)
+    rho_orig_target = 1.0 - alpha_ra / beta_ra
+    rho_orig = max(0.0, 1.0 - alpha_ra / beta_ra_actual) if beta_ra_actual > 0.0 else 0.0
 
     print("\n=== BASE CERTIFICATE ===")
-    print(f"alpha_RA           = {alpha_ra:.6f}")
-    print(f"beta_RA            = {beta_ra:.6f}")
-    print(f"original bound     = {rho_orig:.6f}")
+    print(f"alpha_RA               = {alpha_ra:.6f}")
+    print(f"beta_RA (target)       = {beta_ra:.6f}")
+    print(f"beta_RA (unsafe sample)= {beta_ra_actual:.6f}")
+    print(f"original bound (target)= {rho_orig_target:.6f}")
+    print(f"original bound (actual)= {rho_orig:.6f}")
+
+    plot_certificate_value_histograms(net, out_dir, alpha_ra, beta_ra, beta_ra_actual)
+    plot_certificate_baseline_comparison(alpha_ra, beta_ra, beta_ra_actual, out_dir)
 
     scenarios = get_scenarios()
     summary_rows = []
@@ -1109,6 +1330,23 @@ def main():
         m_grid, argmin_grid = estimate_m_on_box_grid(
             net, scenario.low, scenario.high, nx=M_GRID_NX, ny=M_GRID_NY
         )
+
+        original_verified, original_verify_time, original_verify_prob_ra, original_verify_prob_s, original_verify_decrease_violations = (
+            verify_original_certificate_on_scenario(
+                policy,
+                net,
+                scenario,
+                beta_ra,
+            )
+        )
+
+        print(
+            f"Original certificate on modified system: verified={original_verified}, "
+            f"prob_ra={original_verify_prob_ra:.4f}, "
+            f"prob_s={original_verify_prob_s:.4f}, "
+            f"decrease_violations={original_verify_decrease_violations}"
+        )
+        print(f"Original verification time: {original_verify_time:.4f}s")
 
         print(f"Running re-certification with timeout={RECERT_TIMEOUT_S}s ...")
         (
@@ -1144,7 +1382,14 @@ def main():
             "xq_high_1": float(scenario.high[1]),
             "alpha_ra": alpha_ra,
             "beta_ra": beta_ra,
+            "beta_ra_actual": beta_ra_actual,
+            "original_bound_target": rho_orig_target,
             "original_bound": rho_orig,
+            "original_modified_verified": original_verified,
+            "original_modified_verify_time_s": original_verify_time,
+            "original_modified_prob_ra_estimate": original_verify_prob_ra,
+            "original_modified_prob_s_estimate": original_verify_prob_s,
+            "original_modified_decrease_violations": original_verify_decrease_violations,
             "m_lb_ibp": m_lb_ibp,
             "m_grid_min_raw": m_grid,
             "m_grid_argmin_0": float(argmin_grid[0]),
@@ -1164,6 +1409,7 @@ def main():
             "speedup": speedup,
         }
         summary_rows.append(summary)
+        plot_scenario_space(scenario, out_dir)
 
         print("\nSummary")
         print(f"  m_lb_ibp                  : {m_lb_ibp:.6f}")
