@@ -59,26 +59,42 @@ PAPER_MAIN_SCENARIOS = [
 PAPER_ABSORBING_SCENARIO = "absorbing_central_bridge"
 
 PAPER_LABELS = {
-    "low_reclaim_diff_1p5": "Low reclaim\n(diffusion)",
-    "borderline_diff_2p0": "Borderline\n(diffusion)",
-    "right_corridor_drift_strong": "Strong corridor\n(drift)",
-    "near_sat_far_right_diff_1p1": "Near saturation\n(diffusion)",
-    "absorbing_central_bridge": "Central bridge\n(absorbing)",
+    "low_reclaim_diff_1p5": "Low certificate\nmargin",
+    "borderline_diff_2p0": "Borderline\nmargin",
+    "mid_band_drift_mild": "Mild drift\nchange",
+    "mid_transition_diff_2p0": "Transition\nregion",
+    "right_corridor_drift_strong": "Strong drift\ncorridor",
+    "high_transition_diff_1p5": "High-margin\ntransition",
+    "near_sat_far_right_diff_1p1": "Near original\nbound",
+    "absorbing_central_bridge": "Central absorbing\nregion",
+    "absorbing_scenario_B_target_trap": "Near-target\nabsorbing region",
+    "absorbing_scenario_A_init_trap": "Near-initial\nabsorbing region",
+    "absorbing_low_reclaim_region": "Low-margin\nabsorbing region",
+    "absorbing_mid_transition_region": "Transition\nabsorbing region",
+    "absorbing_outer_left_high_region": "Distant high-margin\nabsorbing region",
+    "absorbing_near_sat_far_right": "Far high-margin\nabsorbing region",
 }
 
 PAPER_CAPTIONS = {
     "paper_main_subset.png": (
         "Comparison of VeRecycle and re-certification on four representative non-absorbing "
         "continuous-time scenarios. Left: VeRecycle returns an immediate reclaimed guarantee, "
-        "while re-certification is reported as the post-hoc sampled estimate of the retrained "
-        "certificate. Right: VeRecycle completes in milliseconds to sub-second time, whereas "
-        "re-certification requires tens of seconds."
+        "while re-certification reports the verified reach-avoid guarantee returned by the "
+        "standard training-and-verification pipeline. Right: VeRecycle completes in "
+        "milliseconds to sub-second time, whereas re-certification requires tens of seconds."
     ),
     "paper_absorbing_case.png": (
         "Exact absorbing case for the central-bridge scenario. The verified lower bound "
-        "m_lb on the disrupted region falls below alpha_RA, so VeRecycle cannot reclaim a "
-        "positive bound. The original certificate also fails under exact absorbing semantics, "
+        "on the disrupted region falls below the initial-set certificate level, so VeRecycle "
+        "cannot reclaim a positive bound. The original certificate also fails under exact absorbing semantics, "
         "and re-certification is unsupported without explicit absorbing-structure knowledge."
+    ),
+    "paper_reclaim_curve.png": (
+        "The continuous-time VeRecycle reclaiming rule as a function of the changed-region "
+        "certificate lower bound. Experimental scenarios lie on the theoretical curve: below "
+        "the initial-set level the reclaimed guarantee is zero, between the initial and unsafe "
+        "levels it increases monotonically, and above the unsafe level it saturates at the "
+        "original guarantee."
     ),
 }
 
@@ -226,7 +242,7 @@ def _draw_codebook(ax, summary_rows, n_cols: int = 2):
     ax.axis("off")
     ax.set_title("Scenario key", fontsize=11, loc="left")
     lines = [
-        f"{row['plot_code']:<3} {row['scenario_name']}"
+        f"{row['plot_code']:<3} {_plain_label(row['scenario_name'])}"
         for row in summary_rows
     ]
     n_cols = max(1, int(n_cols))
@@ -347,6 +363,10 @@ def _paper_label(scenario_name: str) -> str:
     return PAPER_LABELS.get(scenario_name, scenario_name.replace("_", "\n"))
 
 
+def _plain_label(scenario_name: str) -> str:
+    return PAPER_LABELS.get(scenario_name, scenario_name.replace("_", " ")).replace("\n", " ")
+
+
 def _annotate_bar_values(ax, bars, fmt: str, fontsize: int = 8):
     for bar in bars:
         h = bar.get_height()
@@ -361,6 +381,13 @@ def _annotate_bar_values(ax, bars, fmt: str, fontsize: int = 8):
             )
 
 
+def _certified_original_bound(row) -> float:
+    value = row.get("original_bound_target", row.get("original_bound", float("nan")))
+    if value is None or not np.isfinite(value):
+        return float(row["original_bound"])
+    return float(value)
+
+
 def make_paper_main_subset_plot(summary_rows, out_dir: Path):
     rows = _find_rows_in_order(summary_rows, PAPER_MAIN_SCENARIOS)
     if not rows:
@@ -368,10 +395,10 @@ def make_paper_main_subset_plot(summary_rows, out_dir: Path):
 
     labels = [_paper_label(row["scenario_name"]) for row in rows]
     vr_bounds = _plot_safe([row["verecycle_bound"] for row in rows])
-    rr_bounds = _plot_with_nan([row["recert_posthoc_bound"] for row in rows])
+    rr_bounds = _plot_with_nan([row["recert_bound"] for row in rows])
     vr_times = _plot_safe([row["verecycle_time_s"] for row in rows])
     rr_times = _plot_with_nan([row["recert_time_s"] for row in rows], min_value=0.0)
-    original_bound = float(rows[0]["original_bound"])
+    original_bound = _certified_original_bound(rows[0])
 
     x = np.arange(len(rows))
     width = 0.34
@@ -390,7 +417,7 @@ def make_paper_main_subset_plot(summary_rows, out_dir: Path):
             x + width / 2,
             rr_bounds,
             width,
-            label="Re-certification (sampled)",
+            label="Re-certification",
             color=PAPER_COLORS["recert"],
         )
         ax_bounds.axhline(
@@ -453,7 +480,7 @@ def make_paper_absorbing_case_plot(summary_rows, out_dir: Path):
         alpha = float(row["alpha_ra"])
         m_lb = float(row["m_lb_ibp"])
         bars = ax_left.bar(
-            ["alpha_RA", "m_lb_ibp"],
+            ["Initial-set\nlevel", "Changed-region\nlower bound"],
             [alpha, m_lb],
             color=[PAPER_COLORS["accent"], PAPER_COLORS["absorbing"]],
         )
@@ -482,8 +509,8 @@ def make_paper_absorbing_case_plot(summary_rows, out_dir: Path):
             "",
             "Interpretation",
             "The disrupted region enters a regime where the certified lower",
-            "bound m_lb drops below alpha_RA. VeRecycle therefore cannot",
-            "reclaim a positive guarantee, and retraining is unavailable",
+            "bound on the changed set drops below the initial-set level.",
+            "VeRecycle therefore cannot reclaim a positive guarantee, and retraining is unavailable",
             "without explicit absorbing-structure knowledge.",
         ]
         ax_right.text(
@@ -502,6 +529,62 @@ def make_paper_absorbing_case_plot(summary_rows, out_dir: Path):
         plt.close(fig)
 
 
+def make_paper_reclaim_curve_plot(summary_rows, out_dir: Path):
+    finite_rows = [
+        row for row in summary_rows
+        if np.isfinite(row["m_lb_ibp"]) and np.isfinite(row["verecycle_bound"])
+    ]
+    if not finite_rows:
+        return
+
+    alpha = float(finite_rows[0]["alpha_ra"])
+    beta = float(finite_rows[0]["beta_ra"])
+    original_bound = _certified_original_bound(finite_rows[0])
+    max_m = max(float(row["m_lb_ibp"]) for row in finite_rows)
+    xs = np.linspace(max(1e-3, 0.05 * alpha), max(1.05 * max_m, 1.15 * beta), 500)
+    ys = np.minimum(original_bound, np.maximum(0.0, 1.0 - alpha / xs))
+
+    with plt.rc_context(_paper_rc()):
+        fig, ax = plt.subplots(figsize=(7.2, 4.8))
+        ax.plot(xs, ys, color=PAPER_COLORS["reference"], linewidth=2.0, label="Theoretical rule")
+        ax.axvline(alpha, color="#C44E52", linestyle="--", linewidth=1.4, label="Initial-set level")
+        ax.axvline(beta, color="#55A868", linestyle="--", linewidth=1.4, label="Unsafe-set level")
+        ax.axhline(original_bound, color="#7A7A7A", linestyle=":", linewidth=1.4, label="Original bound")
+
+        for row in finite_rows:
+            family = row["scenario_family"]
+            color = FAMILY_COLORS.get(family, "#4C72B0")
+            marker = "o" if family != "absorbing" else "x"
+            ax.scatter(
+                float(row["m_lb_ibp"]),
+                float(row["verecycle_bound"]),
+                color=color,
+                marker=marker,
+                s=70,
+                zorder=3,
+            )
+
+        ax.set_xlabel("Changed-region certificate lower bound")
+        ax.set_ylabel("Reclaimed reach-avoid guarantee")
+        ax.set_title("Reclaiming rule and experimental scenarios")
+        ax.set_ylim(-0.03, min(1.02, original_bound + 0.12))
+        ax.set_xlim(0.0, xs[-1])
+        _style_paper_axis(ax)
+        handles, labels = ax.get_legend_handles_labels()
+        handles.extend(
+            [
+                Line2D([0], [0], marker="o", linestyle="None", color=FAMILY_COLORS["diffusion"], label="Diffusion change"),
+                Line2D([0], [0], marker="o", linestyle="None", color=FAMILY_COLORS["drift"], label="Drift change"),
+                Line2D([0], [0], marker="x", linestyle="None", color=FAMILY_COLORS["absorbing"], label="Absorbing change"),
+            ]
+        )
+        labels.extend(["Diffusion change", "Drift change", "Absorbing change"])
+        ax.legend(handles, labels, frameon=False, loc="lower right", fontsize=8)
+        fig.tight_layout()
+        fig.savefig(out_dir / "paper_reclaim_curve.png", dpi=300, bbox_inches="tight")
+        plt.close(fig)
+
+
 def make_summary_plots(summary_rows, out_dir: Path):
     summary_rows = _with_plot_codes(summary_rows)
     _write_scenario_codebook(summary_rows, out_dir)
@@ -510,7 +593,7 @@ def make_summary_plots(summary_rows, out_dir: Path):
     scenario_names = [row["scenario_name"] for row in summary_rows]
     plot_labels = [row["plot_code"] for row in summary_rows]
     vr_bounds = _plot_safe([row["verecycle_bound"] for row in summary_rows])
-    rr_bounds = _plot_with_nan([row["recert_posthoc_bound"] for row in summary_rows])
+    rr_bounds = _plot_with_nan([row["recert_bound"] for row in summary_rows])
     vr_times = _plot_safe([row["verecycle_time_s"] for row in summary_rows])
     rr_times = _plot_with_nan([row["recert_time_s"] for row in summary_rows], min_value=0.0)
     m_lb_ibp = _plot_safe([row["m_lb_ibp"] for row in summary_rows])
@@ -522,7 +605,7 @@ def make_summary_plots(summary_rows, out_dir: Path):
 
     x = np.arange(len(summary_rows))
     width = 0.35
-    original_bound = float(summary_rows[0]["original_bound"])
+    original_bound = _certified_original_bound(summary_rows[0])
 
     plt.figure(figsize=(10, 5))
     plt.bar(x - width / 2, vr_bounds, width, label="VeRecycle")
@@ -568,7 +651,7 @@ def make_summary_plots(summary_rows, out_dir: Path):
                 fontsize=8,
                 rotation=90,
             )
-    plt.xticks(x, scenario_names, rotation=20, ha="right")
+    plt.xticks(x, plot_labels)
     plt.ylabel("VeRecycle bound")
     plt.title("Cases where VeRecycle succeeds but re-certification does not")
     plt.legend()
@@ -617,7 +700,7 @@ def make_summary_plots(summary_rows, out_dir: Path):
     plt.figure(figsize=(10, 5))
     plt.bar(x, m_lb_ibp, width, color="#4C72B0")
     plt.xticks(x, plot_labels)
-    plt.ylabel("Lower bound m_lb_ibp")
+    plt.ylabel("Changed-region certificate lower bound")
     plt.title("Estimated local lower bound by scenario code")
     plt.tight_layout()
     plt.savefig(out_dir / "m_lb_ibp_comparison.png", dpi=300, bbox_inches="tight")
@@ -652,7 +735,7 @@ def make_summary_plots(summary_rows, out_dir: Path):
     ]
     plt.bar(x, gap, width, color="#8172B2")
     plt.xticks(x, plot_labels)
-    plt.ylabel("Post-hoc re-certification - VeRecycle")
+    plt.ylabel("Re-certification - VeRecycle")
     plt.title("Bound gap comparison by scenario code")
     plt.tight_layout()
     plt.savefig(out_dir / "bound_gap_comparison.png", dpi=300, bbox_inches="tight")
@@ -673,7 +756,7 @@ def make_summary_plots(summary_rows, out_dir: Path):
         ax.scatter(x, y_vr, color=color, s=90, marker="o", zorder=3)
         if np.isfinite(y_rr):
             ax.scatter(x, y_rr, facecolors="white", edgecolors=color, linewidths=1.8, s=90, marker="s", zorder=4)
-    ax.set_xlabel("m_lb_ibp")
+    ax.set_xlabel("Changed-region certificate lower bound")
     ax.set_ylabel("Reach-avoid probability")
     ax.set_title("Local lower bound vs guarantees")
     ax.grid(True, linestyle="--", alpha=0.35)
@@ -731,7 +814,7 @@ def make_summary_plots(summary_rows, out_dir: Path):
     plt.figure(figsize=(10, 5))
     plt.bar(x_ord, ordered_m)
     plt.xticks(x_ord, ordered_names, rotation=20, ha="right")
-    plt.ylabel("m_lb_ibp")
+    plt.ylabel("Changed-region certificate lower bound")
     plt.title("Local lower bound ordered by scenario")
     plt.tight_layout()
     plt.savefig(out_dir / "m_lb_ibp_ordered.png", dpi=300, bbox_inches="tight")
@@ -751,6 +834,7 @@ def make_summary_plots(summary_rows, out_dir: Path):
 
     make_paper_main_subset_plot(summary_rows, out_dir)
     make_paper_absorbing_case_plot(summary_rows, out_dir)
+    make_paper_reclaim_curve_plot(summary_rows, out_dir)
 
 
 def plot_scenario_space(
@@ -784,9 +868,9 @@ def plot_scenario_space(
     add_box(target_bounds[0], "Target set", "blue", "blue", alpha=0.12)
     for ub in unsafe_bounds:
         add_box(ub, "Unsafe set", "red", "none", alpha=0.0)
-    add_box(np.stack([scenario.low, scenario.high]), "Disrupted X_q", "orange", "orange", alpha=0.18)
+    add_box(np.stack([scenario.low, scenario.high]), "Changed region", "orange", "orange", alpha=0.18)
 
-    ax.set_title(f"Scenario space: {scenario.name}")
+    ax.set_title(f"Scenario space: {_plain_label(scenario.name)}")
     ax.set_xlabel("Velocity")
     ax.set_ylabel("Angle")
     ax.set_xlim(float(global_bounds[0, 0, 0]) - 0.5, float(global_bounds[0, 1, 0]) + 0.5)
@@ -819,9 +903,9 @@ def plot_certificate_value_histograms(
     bins = 80
     plt.hist(vals_init, bins=bins, alpha=0.6, label="Initial set", density=True, color="#4C72B0")
     plt.hist(vals_unsafe, bins=bins, alpha=0.6, label="Unsafe set", density=True, color="#C44E52")
-    plt.axvline(alpha_ra, color="green", linestyle="--", linewidth=2, label="alpha_RA")
-    plt.axvline(beta_ra, color="orange", linestyle="--", linewidth=2, label="beta_RA nominal")
-    plt.axvline(beta_ra_actual, color="red", linestyle=":", linewidth=2, label="beta_RA actual")
+    plt.axvline(alpha_ra, color="green", linestyle="--", linewidth=2, label="Initial-set upper level")
+    plt.axvline(beta_ra, color="orange", linestyle="--", linewidth=2, label="Unsafe-set target level")
+    plt.axvline(beta_ra_actual, color="red", linestyle=":", linewidth=2, label="Unsafe-set sampled level")
     plt.xlabel("Certificate value V(x)")
     plt.ylabel("Density")
     plt.title("Certificate value distribution on initial and unsafe sets")
@@ -891,7 +975,7 @@ def make_recertification_history_plot(summary_rows, out_dir: Path):
         return
 
     ax.set_xlabel("Epoch")
-    ax.set_ylabel("Rho")
+    ax.set_ylabel("Verified reach-avoid probability")
     ax.set_title("Re-certification convergence history")
     ax.grid(True, linestyle="--", alpha=0.3)
     ax.legend(ncol=2, fontsize=8, frameon=False)

@@ -764,10 +764,12 @@ def _recert_worker(policy_state_dict, certificate_state_dict, scenario_payload, 
 
         alpha_ra = float("nan")
         beta_ra = float("nan")
+        verified_bound = float("nan")
         posthoc_bound = float("nan")
 
         if certified:
             net.eval()
+            verified_bound = REACH_AVOID_PROBABILITY
             alpha_ra = estimate_alpha(net, local_initial_set)
             beta_ra = estimate_beta_on_unsafe(net, local_unsafe_set)
 
@@ -778,12 +780,13 @@ def _recert_worker(policy_state_dict, certificate_state_dict, scenario_payload, 
 
         msg = {
             "status": "certified" if certified else "not_certified",
-            "rho": posthoc_bound,
+            "rho": verified_bound,
+            "posthoc_rho": posthoc_bound,
             "alpha_ra": alpha_ra,
             "beta_ra": beta_ra,
             "epoch": epoch,
             "elapsed": elapsed,
-            "history": [{"epoch": epoch, "rho": posthoc_bound}],
+            "history": [{"epoch": epoch, "rho": verified_bound}],
             "raw_result": repr(result),
         }
 
@@ -977,9 +980,9 @@ def format_optional_value(value, fmt: str = ".6f") -> str:
 
 
 def recert_summary_value(status, value):
-    if status == "unsupported":
-        return 0.0
-    return value
+    if status == "certified":
+        return value
+    return 0.0
 
 
 def recert_epoch_value(status, value):
@@ -995,7 +998,7 @@ def recert_runtime_value(status, value):
 
 
 def recert_optional_stat_value(status, value):
-    if status == "unsupported":
+    if status != "certified":
         return ""
     return value
 
@@ -1210,6 +1213,16 @@ def main():
             recert_beta_ra,
         ) = recertify_on_scenario(policy, net, scenario, timeout_s=RECERT_TIMEOUT_S)
 
+        if (
+            recert_status == "certified"
+            and np.isfinite(recert_alpha_ra)
+            and np.isfinite(recert_beta_ra)
+            and recert_beta_ra > 0.0
+        ):
+            recert_posthoc_bound = max(1.0 - recert_alpha_ra / recert_beta_ra, 0.0)
+        else:
+            recert_posthoc_bound = float("nan")
+
         if recert_status == "unsupported":
             runtime_ratio_recert_over_verecycle = float("nan")
         else:
@@ -1251,8 +1264,8 @@ def main():
             "verecycle_bound": eps_vr,
             "verecycle_time_s": t_vr,
             "recert_bound": recert_summary_value(recert_status, recert_bound),
-            "recert_posthoc_estimate": recert_optional_stat_value(recert_status, recert_bound),
-            "recert_posthoc_bound": recert_summary_value(recert_status, recert_bound),
+            "recert_posthoc_estimate": recert_optional_stat_value(recert_status, recert_posthoc_bound),
+            "recert_posthoc_bound": recert_summary_value(recert_status, recert_posthoc_bound),
             "recert_alpha_ra": recert_optional_stat_value(recert_status, recert_alpha_ra),
             "recert_beta_ra": recert_optional_stat_value(recert_status, recert_beta_ra),
             "recert_certified_epoch": recert_epoch_value(recert_status, recert_certified_epoch),
@@ -1261,14 +1274,13 @@ def main():
             "recert_note": recert_note,
             "recert_raw_result": recert_raw_result,
             "recert_bound_note": (
-                "unsupported exact absorbing case: the plotted re-certification bound is set "
-                "to 0 by convention, matching the DT-style presentation for unavailable repair "
-                "cases; it is not a computed post-hoc estimate"
+                "unsupported exact absorbing case: the reported re-certification bound is 0 "
+                "because no verified re-certification result is available"
                 if recert_status == "unsupported"
                 else
-                "this numeric value is only a post-hoc sampled estimate on the trained "
-                "certificate and must not be interpreted as a certified lower bound; "
-                "the certified result is given by recert_status"
+                "reported re-certification bound is the target reach-avoid probability "
+                "verified by certificate.train(); sampled certificate-level ratios are "
+                "stored only as diagnostics"
             ),
             "recert_outcome": classify_recert_outcome(recert_status, recert_bound),
             "method_comparison": classify_method_comparison(eps_vr, recert_status),
@@ -1297,14 +1309,14 @@ def main():
         if original_verify_note:
             print(f"  Original verify note      : {original_verify_note}")
         print(f"  Re-cert status            : {recert_status}")
-        print(f"  Re-cert post-hoc estimate : {format_optional_value(None if recert_status == 'unsupported' else recert_bound)}")
+        print(f"  Re-cert verified bound    : {format_optional_value(None if recert_status == 'unsupported' else recert_bound)}")
         print(f"  Re-cert alpha             : {format_optional_value(recert_alpha_ra)}")
         print(f"  Re-cert beta              : {format_optional_value(recert_beta_ra)}")
         print("  Re-cert note              : certified result is the status above;")
         if recert_status == "unsupported":
             print("                               no re-certification run is available for exact absorbing cases")
         else:
-            print("                               the numeric value here is only a post-hoc sampled estimate")
+            print("                               verified bound is the configured reach-avoid probability")
         if recert_note:
             print(f"  Worker/system note        : {recert_note}")
         if recert_raw_result:
@@ -1338,7 +1350,7 @@ def main():
         print(f"\nScenario: {row['scenario_name']}")
         print(f"  VeRecycle bound           : {row['verecycle_bound']:.6f}")
         print(f"  Re-cert status            : {row['recert_status']}")
-        print(f"  Re-cert post-hoc estimate : {format_optional_value(None if row['recert_status'] == 'unsupported' else row['recert_posthoc_bound'])}")
+        print(f"  Re-cert verified bound    : {format_optional_value(None if row['recert_status'] == 'unsupported' else row['recert_bound'])}")
         print(f"  Runtime ratio (RR/VR)     : {format_optional_value(None if row['recert_status'] == 'unsupported' else row['runtime_ratio_recert_over_verecycle'], '.4f')}")
         print(f"  m_lb_ibp                  : {row['m_lb_ibp']:.6f}")
 
